@@ -1,0 +1,25 @@
+services:
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    volumes:
+      - web-dist:/app/output
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    environment:
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-changeme}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./server/app:/app/app
+      - web-dist:/app/static
+    depends_on:
+      web:
+        condition: service_completed_successfully
+
+volumes:
+  web-dist:
