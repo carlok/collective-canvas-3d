@@ -87,11 +87,18 @@ async def ws_participant(ws: WebSocket):
             data = json.loads(raw)
 
             if data.get("type") == "position":
-                # Values arrive pre-normalized to [-1, 1] from mobile
-                alpha = max(-1.0, min(1.0, float(data.get("alpha", 0))))
-                beta = max(-1.0, min(1.0, float(data.get("beta", 0))))
-                gamma = max(-1.0, min(1.0, float(data.get("gamma", 0))))
+                alpha = float(data.get("alpha", 0))
+                beta = float(data.get("beta", 0))
+                gamma = float(data.get("gamma", 0))
                 drawing = bool(data.get("drawing", False))
+
+                # Debug: log every ~2 seconds (30Hz × 60 = ~every 60th msg)
+                if hasattr(ws, '_pos_count'):
+                    ws._pos_count += 1
+                else:
+                    ws._pos_count = 0
+                if ws._pos_count % 60 == 0:
+                    logger.warning(f"[{pid}] pos=({alpha:.3f}, {beta:.3f}, {gamma:.3f}) drawing={drawing}")
 
                 room_mgr.update_position(pid, alpha, beta, gamma, drawing)
 
@@ -201,6 +208,10 @@ async def _broadcast_admin_state():
 import os as _os
 
 STATIC_DIR = "/app/static"
+
+@app.get("/favicon.svg")
+async def serve_favicon():
+    return FileResponse(f"{STATIC_DIR}/favicon.svg", media_type="image/svg+xml")
 
 @app.get("/mobile")
 @app.get("/mobile/")

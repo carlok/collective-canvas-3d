@@ -1,12 +1,45 @@
 import { useState, useRef, useCallback } from 'react'
-import { Canvas } from '@react-three/fiber'
+import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
+import * as THREE from 'three'
 import { QRCodeSVG } from 'qrcode.react'
 import { createWs } from '../shared/ws'
 import { ParticleSystem } from '../shared/ParticleSystem'
 import { TrailSystem } from '../shared/TrailSystem'
 import { SceneHelpers } from '../shared/SceneHelpers'
 import type { ServerMsg, ParticipantSnapshot } from '../shared/types'
+
+const SCALE = 3.0
+
+// Auto-follow camera: orbit around the centroid of active participants
+function AutoFollowTarget({ snapshotRef, controlsRef }: {
+  snapshotRef: React.MutableRefObject<ParticipantSnapshot[]>
+  controlsRef: React.MutableRefObject<any>
+}) {
+  const target = useRef(new THREE.Vector3())
+
+  useFrame(() => {
+    const snap = snapshotRef.current
+    if (snap.length === 0 || !controlsRef.current) return
+
+    // Compute centroid
+    let cx = 0, cy = 0, cz = 0
+    for (const p of snap) {
+      cx += p.x * SCALE
+      cy += p.y * SCALE
+      cz += p.z * SCALE
+    }
+    cx /= snap.length
+    cy /= snap.length
+    cz /= snap.length
+
+    // Smoothly move toward centroid
+    target.current.lerp(new THREE.Vector3(cx, cy, cz), 0.03)
+    controlsRef.current.target.copy(target.current)
+  })
+
+  return null
+}
 
 export function DisplayApp() {
   const [authed, setAuthed] = useState(false)
@@ -15,6 +48,7 @@ export function DisplayApp() {
   const [phase, setPhase] = useState<'lobby' | 'live'>('lobby')
   const [count, setCount] = useState(0)
   const snapshotRef = useRef<ParticipantSnapshot[]>([])
+  const controlsRef = useRef<any>(null)
 
   const mobileUrl = `${window.location.protocol}//${window.location.hostname}:${window.location.port}/mobile`
 
@@ -101,12 +135,14 @@ export function DisplayApp() {
         <SceneHelpers />
         <TrailSystem snapshotRef={snapshotRef} />
         <ParticleSystem snapshotRef={snapshotRef} />
+        <AutoFollowTarget snapshotRef={snapshotRef} controlsRef={controlsRef} />
         <OrbitControls
+          ref={controlsRef}
           autoRotate
           autoRotateSpeed={0.5}
           enableDamping
           dampingFactor={0.1}
-          enableZoom={false}
+          enableZoom
           enablePan={false}
         />
       </Canvas>

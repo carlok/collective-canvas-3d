@@ -36,10 +36,10 @@ class RoomManager:
         p = self.room.participants.get(pid)
         if not p:
             return
-        # Values arrive pre-normalized to [-1, 1] from the mobile client
-        p.x = max(-1.0, min(1.0, alpha)) + p.offset_x
-        p.y = max(-1.0, min(1.0, beta)) + p.offset_y
-        p.z = max(-1.0, min(1.0, gamma)) + p.offset_z
+        # Values from mobile — unbounded airplane position + per-participant offset
+        p.x = alpha + p.offset_x
+        p.y = beta + p.offset_y
+        p.z = gamma + p.offset_z
         p.drawing = drawing
 
     def get_snapshot(self) -> list[dict]:
