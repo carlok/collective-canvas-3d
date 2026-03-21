@@ -87,23 +87,13 @@ async def ws_participant(ws: WebSocket):
             data = json.loads(raw)
 
             if data.get("type") == "position":
-                alpha = float(data.get("alpha", 0))
-                beta = float(data.get("beta", 0))
-                gamma = float(data.get("gamma", 0))
+                # Values arrive pre-normalized to [-1, 1] from mobile
+                alpha = max(-1.0, min(1.0, float(data.get("alpha", 0))))
+                beta = max(-1.0, min(1.0, float(data.get("beta", 0))))
+                gamma = max(-1.0, min(1.0, float(data.get("gamma", 0))))
                 drawing = bool(data.get("drawing", False))
 
-                # Clamp inputs
-                alpha = max(0.0, min(360.0, alpha))
-                beta = max(-180.0, min(180.0, beta))
-                gamma = max(-90.0, min(90.0, gamma))
-
                 room_mgr.update_position(pid, alpha, beta, gamma, drawing)
-
-                # Debug: log occasionally
-                if drawing and int(alpha) % 30 == 0:
-                    p = room_mgr.room.participants.get(pid)
-                    if p:
-                        logger.warning(f"POS {pid}: a={alpha:.0f} b={beta:.0f} g={gamma:.0f} draw={drawing} -> x={p.x:.2f} y={p.y:.2f} z={p.z:.2f}")
 
     except (WebSocketDisconnect, Exception):
         pass

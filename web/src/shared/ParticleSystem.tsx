@@ -3,27 +3,30 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { ParticipantSnapshot } from './types'
 
-const MAX_PARTICLES = 30000
-const PARTICLE_LIFETIME = 5.0
-const SCALE_FACTOR = 2.0
+const MAX_PARTICLES = 100000
+const PARTICLE_LIFETIME = 2.0
+const SCALE_FACTOR = 3.0 // wider world space
 
 interface ParticleSystemProps {
   snapshotRef: React.MutableRefObject<ParticipantSnapshot[]>
 }
 
-// Interpolated position per participant for smooth trails
-interface LerpState {
-  x: number; y: number; z: number       // current interpolated position
-  tx: number; ty: number; tz: number     // target position from latest snapshot
+interface BrushState {
+  // Previous emit position (for line emission)
+  px: number; py: number; pz: number
+  // Current interpolated position
+  x: number; y: number; z: number
+  // Target from snapshot
+  tx: number; ty: number; tz: number
   color: string
   drawing: boolean
+  wasDrawing: boolean
 }
 
 export function ParticleSystem({ snapshotRef }: ParticleSystemProps) {
   const pointsRef = useRef<THREE.Points>(null)
   const nextSlot = useRef(0)
-  const lerpStates = useRef<Map<string, LerpState>>(new Map())
-  const logTimer = useRef(0)
+  const brushes = useRef<Map<string, BrushState>>(new Map())
 
   const { positions, colors, sizes, ages } = useMemo(() => {
     const positions = new Float32Array(MAX_PARTICLES * 3)
@@ -35,77 +38,105 @@ export function ParticleSystem({ snapshotRef }: ParticleSystemProps) {
 
   const tmpColor = useMemo(() => new THREE.Color(), [])
 
+  function emitAt(x: number, y: number, z: number, color: THREE.Color) {
+    const slot = nextSlot.current % MAX_PARTICLES
+    nextSlot.current++
+    const jitter = 0.02
+    positions[slot * 3] = x + (Math.random() - 0.5) * jitter
+    positions[slot * 3 + 1] = y + (Math.random() - 0.5) * jitter
+    positions[slot * 3 + 2] = z + (Math.random() - 0.5) * jitter
+    colors[slot * 3] = color.r
+    colors[slot * 3 + 1] = color.g
+    colors[slot * 3 + 2] = color.b
+    sizes[slot] = 1.0 + Math.random() * 0.5
+    ages[slot] = 0
+  }
+
   useFrame((_, delta) => {
     const snapshot = snapshotRef.current
-    const states = lerpStates.current
+    const states = brushes.current
 
-    // Update targets from latest snapshot
+    // Update targets
     const activeIds = new Set<string>()
     for (const p of snapshot) {
       activeIds.add(p.id)
+      const sx = p.x * SCALE_FACTOR
+      const sy = p.y * SCALE_FACTOR
+      const sz = p.z * SCALE_FACTOR
       let state = states.get(p.id)
       if (!state) {
-        // New participant — snap to position
         state = {
-          x: p.x * SCALE_FACTOR, y: p.y * SCALE_FACTOR, z: p.z * SCALE_FACTOR,
-          tx: p.x * SCALE_FACTOR, ty: p.y * SCALE_FACTOR, tz: p.z * SCALE_FACTOR,
-          color: p.color,
-          drawing: p.drawing,
+          px: sx, py: sy, pz: sz,
+          x: sx, y: sy, z: sz,
+          tx: sx, ty: sy, tz: sz,
+          color: p.color, drawing: p.drawing, wasDrawing: false,
         }
         states.set(p.id, state)
       } else {
-        state.tx = p.x * SCALE_FACTOR
-        state.ty = p.y * SCALE_FACTOR
-        state.tz = p.z * SCALE_FACTOR
+        state.tx = sx
+        state.ty = sy
+        state.tz = sz
         state.drawing = p.drawing
         state.color = p.color
       }
     }
 
-    // Remove stale participants
     for (const id of states.keys()) {
       if (!activeIds.has(id)) states.delete(id)
     }
 
-    // Lerp positions and emit particles
-    const lerpSpeed = 12.0 // higher = snappier following
+    // Lerp and emit
+    const lerpSpeed = 8.0
     for (const state of states.values()) {
-      // Smooth interpolation toward target
+      // Save previous position before lerp
+      const prevX = state.x
+      const prevY = state.y
+      const prevZ = state.z
+
+      // Interpolate toward target
       state.x += (state.tx - state.x) * Math.min(1, lerpSpeed * delta)
       state.y += (state.ty - state.y) * Math.min(1, lerpSpeed * delta)
       state.z += (state.tz - state.z) * Math.min(1, lerpSpeed * delta)
 
       if (state.drawing) {
-        // Emit 1 particle per frame per participant (not 4)
-        const slot = nextSlot.current % MAX_PARTICLES
-        nextSlot.current++
-
-        const jitter = 0.03
-        positions[slot * 3] = state.x + (Math.random() - 0.5) * jitter
-        positions[slot * 3 + 1] = state.y + (Math.random() - 0.5) * jitter
-        positions[slot * 3 + 2] = state.z + (Math.random() - 0.5) * jitter
-
         tmpColor.set(state.color)
-        colors[slot * 3] = tmpColor.r
-        colors[slot * 3 + 1] = tmpColor.g
-        colors[slot * 3 + 2] = tmpColor.b
 
-        sizes[slot] = 6.0 + Math.random() * 3.0
-        ages[slot] = 0
+        if (!state.wasDrawing) {
+          // Just started drawing — emit at current position, set prev
+          state.px = state.x
+          state.py = state.y
+          state.pz = state.z
+          emitAt(state.x, state.y, state.z, tmpColor)
+        } else {
+          // Line emission: emit particles along the line from prev to current
+          const dx = state.x - state.px
+          const dy = state.y - state.py
+          const dz = state.z - state.pz
+          const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+
+          // Emit every ~0.02 world units along the line, minimum 1
+          const spacing = 0.005
+          const count = Math.max(2, Math.ceil(dist / spacing))
+
+          for (let i = 0; i < count; i++) {
+            const t = count === 1 ? 1 : i / (count - 1)
+            const ex = state.px + dx * t
+            const ey = state.py + dy * t
+            const ez = state.pz + dz * t
+            emitAt(ex, ey, ez, tmpColor)
+          }
+        }
+
+        // Update previous position
+        state.px = state.x
+        state.py = state.y
+        state.pz = state.z
       }
+
+      state.wasDrawing = state.drawing
     }
 
-    // Debug log
-    logTimer.current += delta
-    if (logTimer.current > 3) {
-      logTimer.current = 0
-      const drawingCount = Array.from(states.values()).filter(s => s.drawing).length
-      if (states.size > 0) {
-        console.log(`[particles] ${states.size} participants, ${drawingCount} drawing, ${nextSlot.current} total emitted`)
-      }
-    }
-
-    // Age and fade particles
+    // Age and fade
     for (let i = 0; i < MAX_PARTICLES; i++) {
       if (ages[i] <= PARTICLE_LIFETIME) {
         ages[i] += delta
@@ -113,14 +144,12 @@ export function ParticleSystem({ snapshotRef }: ParticleSystemProps) {
         if (life <= 0) {
           sizes[i] = 0
         } else {
-          sizes[i] = life * (6.0 + Math.random() * 0.5)
-          // Slight upward drift for smoke effect
-          positions[i * 3 + 1] += delta * 0.02
+          sizes[i] = life * (1.0 + Math.random() * 0.2)
+          positions[i * 3 + 1] += delta * 0.015
         }
       }
     }
 
-    // Update GPU buffers
     const points = pointsRef.current
     if (points) {
       const geom = points.geometry
@@ -163,7 +192,7 @@ export function ParticleSystem({ snapshotRef }: ParticleSystemProps) {
           void main() {
             vColor = color;
             vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-            gl_PointSize = size * (300.0 / -mvPosition.z);
+            gl_PointSize = size * (60.0 / -mvPosition.z);
             gl_Position = projectionMatrix * mvPosition;
           }
         `}
@@ -173,7 +202,7 @@ export function ParticleSystem({ snapshotRef }: ParticleSystemProps) {
             float d = length(gl_PointCoord - vec2(0.5));
             if (d > 0.5) discard;
             float alpha = smoothstep(0.5, 0.0, d);
-            gl_FragColor = vec4(vColor, alpha * 0.9);
+            gl_FragColor = vec4(vColor, alpha * 0.6);
           }
         `}
       />

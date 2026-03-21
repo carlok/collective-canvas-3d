@@ -4,9 +4,14 @@ import type { ServerMsg, PositionMsg } from '../shared/types'
 
 type Phase = 'loading' | 'join' | 'waiting' | 'permission' | 'hint' | 'painting' | 'error'
 
-function hasOrientationSensor(): boolean {
-  return 'DeviceOrientationEvent' in window && 'ontouchstart' in window
+function hasMotionSensor(): boolean {
+  return 'DeviceMotionEvent' in window && 'ontouchstart' in window
 }
+
+// Sensitivity: degrees/second integrated over time → maps to position
+// Lower = more sensitive (bigger movements from smaller gestures)
+const POSITION_DECAY = 0.97 // slight pull back to center (prevents drift)
+const ROTATION_SCALE = 0.0008 // how fast rotation maps to position change
 
 export function MobileApp() {
   const [phase, setPhase] = useState<Phase>('join')
@@ -18,18 +23,19 @@ export function MobileApp() {
   const wsRef = useRef<ReturnType<typeof createWs> | null>(null)
   const drawingRef = useRef(false)
   const sendIntervalRef = useRef<number | null>(null)
-  const orientationRef = useRef({ alpha: 180, beta: 0, gamma: 0 }) // start at center
+  // Position accumulated from gyroscope integration
+  const posRef = useRef({ x: 0, y: 0, z: 0 })
 
   const startSending = useCallback(() => {
     if (sendIntervalRef.current) return
     console.log('[mobile] startSending at 30Hz')
     sendIntervalRef.current = window.setInterval(() => {
-      const o = orientationRef.current
+      const p = posRef.current
       const msg: PositionMsg = {
         type: 'position',
-        alpha: o.alpha,
-        beta: o.beta,
-        gamma: o.gamma,
+        alpha: p.x,
+        beta: p.y,
+        gamma: p.z,
         drawing: drawingRef.current,
       }
       wsRef.current?.send(msg)
@@ -63,11 +69,10 @@ export function MobileApp() {
           }
           break
         case 'go_live':
-          console.log('[mobile] Go Live received, hasOrientation:', hasOrientationSensor())
-          if (hasOrientationSensor()) {
+          console.log('[mobile] Go Live received')
+          if (hasMotionSensor()) {
             setPhase('permission')
           } else {
-            // Desktop: skip permission, go straight to painting
             setPhase('painting')
             startSending()
           }
@@ -75,6 +80,7 @@ export function MobileApp() {
         case 'stop':
           setPhase('waiting')
           stopSending()
+          posRef.current = { x: 0, y: 0, z: 0 }
           break
         case 'error':
           if ('message' in data) {
@@ -88,27 +94,46 @@ export function MobileApp() {
   }, [startSending, stopSending])
 
   const handleEnableBrush = useCallback(async () => {
-    const DOE = DeviceOrientationEvent as any
-    if (typeof DOE.requestPermission === 'function') {
+    // Request permission for DeviceMotion (iOS 13+)
+    const DME = DeviceMotionEvent as any
+    if (typeof DME.requestPermission === 'function') {
       try {
-        const result = await DOE.requestPermission()
+        const result = await DME.requestPermission()
         if (result !== 'granted') {
-          console.warn('[mobile] Orientation permission denied, using touch fallback')
+          console.warn('[mobile] Motion permission denied')
         }
       } catch {
-        console.warn('[mobile] Orientation permission error')
+        console.warn('[mobile] Motion permission error')
       }
     }
 
-    window.addEventListener('deviceorientation', (e: DeviceOrientationEvent) => {
-      orientationRef.current = {
-        alpha: e.alpha ?? 180,
-        beta: e.beta ?? 0,
-        gamma: e.gamma ?? 0,
-      }
-      const nx = ((e.alpha ?? 180) / 180) - 1
-      const ny = (e.beta ?? 0) / 90
-      setBrushPos({ x: nx, y: ny })
+    // Use gyroscope rotation rate — no gimbal lock, works in any orientation
+    window.addEventListener('devicemotion', (e: DeviceMotionEvent) => {
+      const rate = e.rotationRate
+      if (!rate) return
+
+      const interval = (e.interval || 16) / 1000 // seconds
+
+      // Integrate rotation rate into position
+      // alpha = yaw (Z rotation) → X position
+      // beta = pitch (X rotation) → Y position
+      // gamma = roll (Y rotation) → Z position
+      const pos = posRef.current
+      pos.x += (rate.alpha || 0) * interval * ROTATION_SCALE
+      pos.y += (rate.beta || 0) * interval * ROTATION_SCALE
+      pos.z += (rate.gamma || 0) * interval * ROTATION_SCALE
+
+      // Slight decay toward center to prevent unbounded drift
+      pos.x *= POSITION_DECAY
+      pos.y *= POSITION_DECAY
+      pos.z *= POSITION_DECAY
+
+      // Clamp to [-1, 1]
+      pos.x = Math.max(-1, Math.min(1, pos.x))
+      pos.y = Math.max(-1, Math.min(1, pos.y))
+      pos.z = Math.max(-1, Math.min(1, pos.z))
+
+      setBrushPos({ x: pos.x, y: -pos.y })
     })
 
     setPhase('hint')
@@ -118,21 +143,18 @@ export function MobileApp() {
     }, 3000)
   }, [startSending])
 
-  // Drawing state — use both ref (for interval) and state (for UI)
   const setIsDrawing = useCallback((value: boolean) => {
     drawingRef.current = value
     setDrawing(value)
   }, [])
 
+  // Desktop mouse fallback
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-    const nx = ((e.clientX - rect.left) / rect.width) * 360
-    const ny = ((e.clientY - rect.top) / rect.height) * 180 - 90
-    orientationRef.current = { alpha: nx, beta: ny, gamma: 0 }
-    setBrushPos({
-      x: (nx / 180) - 1,
-      y: ny / 90,
-    })
+    const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1
+    const ny = ((e.clientY - rect.top) / rect.height) * 2 - 1
+    posRef.current = { x: nx, y: ny, z: 0 }
+    setBrushPos({ x: nx, y: -ny })
   }, [])
 
   useEffect(() => {
@@ -175,8 +197,8 @@ export function MobileApp() {
       borderRadius: '50%',
       background: '#fff',
       boxShadow: `0 0 20px ${color}, 0 0 40px ${color}`,
-      left: `${50 + brushPos.x * 30}%`,
-      top: `${50 - brushPos.y * 30}%`,
+      left: `${50 + brushPos.x * 40}%`,
+      top: `${50 + brushPos.y * 40}%`,
       transform: 'translate(-50%, -50%)',
       pointerEvents: 'none' as const,
       opacity: drawing ? 1 : 0.4,
@@ -193,11 +215,7 @@ export function MobileApp() {
   }
 
   if (phase === 'loading') {
-    return (
-      <div style={styles.container}>
-        <div style={styles.title}>Connecting...</div>
-      </div>
-    )
+    return <div style={styles.container}><div style={styles.title}>Connecting...</div></div>
   }
 
   if (phase === 'join') {
@@ -213,12 +231,7 @@ export function MobileApp() {
   if (phase === 'waiting') {
     return (
       <div style={{ ...styles.container, animation: 'breathe 3s ease-in-out infinite' }}>
-        <style>{`
-          @keyframes breathe {
-            0%, 100% { filter: brightness(0.9); }
-            50% { filter: brightness(1.1); }
-          }
-        `}</style>
+        <style>{`@keyframes breathe { 0%,100%{filter:brightness(0.9)} 50%{filter:brightness(1.1)} }`}</style>
         <div style={styles.title}>{name}</div>
         <div style={styles.subtitle}>
           You're in! The presenter will start the session soon.<br />
@@ -236,9 +249,7 @@ export function MobileApp() {
           Tap below to enable your brush.<br />
           Your phone will ask for motion permission — tap Allow.
         </div>
-        <button style={styles.button} onClick={handleEnableBrush}>
-          Tap to enable your brush
-        </button>
+        <button style={styles.button} onClick={handleEnableBrush}>Tap to enable your brush</button>
       </div>
     )
   }
@@ -246,19 +257,10 @@ export function MobileApp() {
   if (phase === 'hint') {
     return (
       <div style={styles.container}>
-        <style>{`
-          @keyframes tiltAnim {
-            0%, 100% { transform: rotate(0deg); }
-            25% { transform: rotate(-15deg); }
-            75% { transform: rotate(15deg); }
-          }
-        `}</style>
-        <div style={{ fontSize: '4rem', animation: 'tiltAnim 1.5s ease-in-out infinite' }}>
-          📱
-        </div>
+        <style>{`@keyframes tiltAnim { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-15deg)} 75%{transform:rotate(15deg)} }`}</style>
+        <div style={{ fontSize: '4rem', animation: 'tiltAnim 1.5s ease-in-out infinite' }}>📱</div>
         <div style={{ ...styles.subtitle, marginTop: '1rem' }}>
-          Tilt and move your phone to steer your brush.<br />
-          Touch the screen to paint!
+          Move your phone like a wand to steer your brush.<br />Touch the screen to paint!
         </div>
       </div>
     )
@@ -287,9 +289,7 @@ export function MobileApp() {
     <div style={styles.container}>
       <div style={styles.title}>Oops</div>
       <div style={styles.subtitle}>{error || "Can't reach the server — same WiFi?"}</div>
-      <button style={styles.button} onClick={() => window.location.reload()}>
-        Retry
-      </button>
+      <button style={styles.button} onClick={() => window.location.reload()}>Retry</button>
     </div>
   )
 }

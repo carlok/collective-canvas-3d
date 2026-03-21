@@ -36,10 +36,10 @@ class RoomManager:
         p = self.room.participants.get(pid)
         if not p:
             return
-        # Direct mapping: normalize orientation to [-1, 1]
-        p.x = max(-1.0, min(1.0, (alpha / 180.0) - 1.0)) + p.offset_x
-        p.y = max(-1.0, min(1.0, beta / 90.0)) + p.offset_y
-        p.z = max(-1.0, min(1.0, gamma / 45.0)) + p.offset_z
+        # Values arrive pre-normalized to [-1, 1] from the mobile client
+        p.x = max(-1.0, min(1.0, alpha)) + p.offset_x
+        p.y = max(-1.0, min(1.0, beta)) + p.offset_y
+        p.z = max(-1.0, min(1.0, gamma)) + p.offset_z
         p.drawing = drawing
 
     def get_snapshot(self) -> list[dict]:
