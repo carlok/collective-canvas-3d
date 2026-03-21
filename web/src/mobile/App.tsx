@@ -4,23 +4,51 @@ import type { ServerMsg, PositionMsg } from '../shared/types'
 
 type Phase = 'loading' | 'join' | 'waiting' | 'permission' | 'hint' | 'painting' | 'error'
 
+function hasOrientationSensor(): boolean {
+  return 'DeviceOrientationEvent' in window && 'ontouchstart' in window
+}
+
 export function MobileApp() {
-  const [phase, setPhase] = useState<Phase>('loading')
+  const [phase, setPhase] = useState<Phase>('join')
   const [color, setColor] = useState('#666')
   const [name, setName] = useState('')
   const [error, setError] = useState('')
+  const [drawing, setDrawing] = useState(false)
   const [brushPos, setBrushPos] = useState({ x: 0, y: 0 })
   const wsRef = useRef<ReturnType<typeof createWs> | null>(null)
   const drawingRef = useRef(false)
   const sendIntervalRef = useRef<number | null>(null)
-  const orientationRef = useRef({ alpha: 0, beta: 0, gamma: 0 })
+  const orientationRef = useRef({ alpha: 180, beta: 0, gamma: 0 }) // start at center
 
-  // Connect WebSocket
+  const startSending = useCallback(() => {
+    if (sendIntervalRef.current) return
+    console.log('[mobile] startSending at 30Hz')
+    sendIntervalRef.current = window.setInterval(() => {
+      const o = orientationRef.current
+      const msg: PositionMsg = {
+        type: 'position',
+        alpha: o.alpha,
+        beta: o.beta,
+        gamma: o.gamma,
+        drawing: drawingRef.current,
+      }
+      wsRef.current?.send(msg)
+    }, 1000 / 30)
+  }, [])
+
+  const stopSending = useCallback(() => {
+    if (sendIntervalRef.current) {
+      clearInterval(sendIntervalRef.current)
+      sendIntervalRef.current = null
+    }
+  }, [])
+
   const handleJoin = useCallback(() => {
     setPhase('loading')
     const ws = createWs('/ws', (data: ServerMsg) => {
       switch (data.type) {
         case '_connected':
+          console.log('[mobile] WebSocket connected')
           break
         case '_disconnected':
           setPhase('error')
@@ -28,13 +56,21 @@ export function MobileApp() {
           break
         case 'assigned':
           if ('color' in data) {
+            console.log('[mobile] Assigned:', data.color, data.name)
             setColor(data.color)
             setName(data.name)
             setPhase('waiting')
           }
           break
         case 'go_live':
-          setPhase('permission')
+          console.log('[mobile] Go Live received, hasOrientation:', hasOrientationSensor())
+          if (hasOrientationSensor()) {
+            setPhase('permission')
+          } else {
+            // Desktop: skip permission, go straight to painting
+            setPhase('painting')
+            startSending()
+          }
           break
         case 'stop':
           setPhase('waiting')
@@ -49,87 +85,47 @@ export function MobileApp() {
       }
     })
     wsRef.current = ws
-  }, [])
+  }, [startSending, stopSending])
 
-  // Request orientation permission (iOS) — must be in direct click handler
   const handleEnableBrush = useCallback(async () => {
     const DOE = DeviceOrientationEvent as any
     if (typeof DOE.requestPermission === 'function') {
       try {
         const result = await DOE.requestPermission()
         if (result !== 'granted') {
-          // Fallback to touch mode — still allow painting
-          console.warn('Orientation permission denied, using touch fallback')
+          console.warn('[mobile] Orientation permission denied, using touch fallback')
         }
       } catch {
-        console.warn('Orientation permission error, using touch fallback')
+        console.warn('[mobile] Orientation permission error')
       }
     }
 
-    // Start listening to orientation
-    window.addEventListener('deviceorientation', handleOrientation)
+    window.addEventListener('deviceorientation', (e: DeviceOrientationEvent) => {
+      orientationRef.current = {
+        alpha: e.alpha ?? 180,
+        beta: e.beta ?? 0,
+        gamma: e.gamma ?? 0,
+      }
+      const nx = ((e.alpha ?? 180) / 180) - 1
+      const ny = (e.beta ?? 0) / 90
+      setBrushPos({ x: nx, y: ny })
+    })
+
     setPhase('hint')
     setTimeout(() => {
       setPhase('painting')
       startSending()
     }, 3000)
-  }, [])
+  }, [startSending])
 
-  const handleOrientation = useCallback((e: DeviceOrientationEvent) => {
-    orientationRef.current = {
-      alpha: e.alpha ?? 0,
-      beta: e.beta ?? 0,
-      gamma: e.gamma ?? 0,
-    }
-    // Update brush position indicator
-    const nx = ((e.alpha ?? 0) / 180) - 1
-    const ny = (e.beta ?? 0) / 90
-    setBrushPos({ x: nx, y: ny })
-  }, [])
-
-  const startSending = useCallback(() => {
-    if (sendIntervalRef.current) return
-    sendIntervalRef.current = window.setInterval(() => {
-      const o = orientationRef.current
-      const msg: PositionMsg = {
-        type: 'position',
-        alpha: o.alpha,
-        beta: o.beta,
-        gamma: o.gamma,
-        drawing: drawingRef.current,
-      }
-      wsRef.current?.send(msg)
-    }, 1000 / 30) // 30Hz
-  }, [])
-
-  const stopSending = useCallback(() => {
-    if (sendIntervalRef.current) {
-      clearInterval(sendIntervalRef.current)
-      sendIntervalRef.current = null
-    }
-  }, [])
-
-  // Touch handlers for pen up/down
-  const handleTouchStart = useCallback(() => {
-    drawingRef.current = true
-  }, [])
-
-  const handleTouchEnd = useCallback(() => {
-    drawingRef.current = false
-  }, [])
-
-  // Mouse fallback for desktop testing
-  const handleMouseDown = useCallback(() => {
-    drawingRef.current = true
-  }, [])
-
-  const handleMouseUp = useCallback(() => {
-    drawingRef.current = false
+  // Drawing state — use both ref (for interval) and state (for UI)
+  const setIsDrawing = useCallback((value: boolean) => {
+    drawingRef.current = value
+    setDrawing(value)
   }, [])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    // Map mouse position to orientation values for desktop fallback
-    const rect = (e.target as HTMLElement).getBoundingClientRect()
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
     const nx = ((e.clientX - rect.left) / rect.width) * 360
     const ny = ((e.clientY - rect.top) / rect.height) * 180 - 90
     orientationRef.current = { alpha: nx, beta: ny, gamma: 0 }
@@ -139,19 +135,12 @@ export function MobileApp() {
     })
   }, [])
 
-  // Cleanup
   useEffect(() => {
     return () => {
       wsRef.current?.close()
       stopSending()
-      window.removeEventListener('deviceorientation', handleOrientation)
     }
-  }, [])
-
-  // Auto-connect on mount
-  useEffect(() => {
-    setPhase('join')
-  }, [])
+  }, [stopSending])
 
   const styles = {
     container: {
@@ -181,8 +170,8 @@ export function MobileApp() {
     },
     brushDot: {
       position: 'absolute' as const,
-      width: 20,
-      height: 20,
+      width: 24,
+      height: 24,
       borderRadius: '50%',
       background: '#fff',
       boxShadow: `0 0 20px ${color}, 0 0 40px ${color}`,
@@ -190,7 +179,7 @@ export function MobileApp() {
       top: `${50 - brushPos.y * 30}%`,
       transform: 'translate(-50%, -50%)',
       pointerEvents: 'none' as const,
-      opacity: drawingRef.current ? 1 : 0.4,
+      opacity: drawing ? 1 : 0.4,
     },
     drawIndicator: {
       position: 'absolute' as const,
@@ -198,7 +187,8 @@ export function MobileApp() {
       left: '50%',
       transform: 'translateX(-50%)',
       fontSize: '0.9rem',
-      opacity: 0.6,
+      opacity: 0.7,
+      fontWeight: 600,
     },
   }
 
@@ -278,21 +268,21 @@ export function MobileApp() {
     return (
       <div
         style={styles.container}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-        onMouseDown={handleMouseDown}
-        onMouseUp={handleMouseUp}
+        onTouchStart={() => setIsDrawing(true)}
+        onTouchEnd={() => setIsDrawing(false)}
+        onMouseDown={() => setIsDrawing(true)}
+        onMouseUp={() => setIsDrawing(false)}
+        onMouseLeave={() => setIsDrawing(false)}
         onMouseMove={handleMouseMove}
       >
         <div style={styles.brushDot} />
         <div style={styles.drawIndicator}>
-          {drawingRef.current ? 'Painting...' : 'Touch to paint'}
+          {drawing ? '🎨 Painting...' : 'Touch to paint'}
         </div>
       </div>
     )
   }
 
-  // Error
   return (
     <div style={styles.container}>
       <div style={styles.title}>Oops</div>

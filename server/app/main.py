@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -7,6 +8,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from .room import RoomManager
+
+logger = logging.getLogger("canvas")
 
 app = FastAPI()
 room_mgr = RoomManager()
@@ -80,7 +83,7 @@ async def ws_participant(ws: WebSocket):
 
     try:
         while True:
-            raw = await asyncio.wait_for(ws.receive_text(), timeout=5.0)
+            raw = await ws.receive_text()
             data = json.loads(raw)
 
             if data.get("type") == "position":
@@ -96,7 +99,13 @@ async def ws_participant(ws: WebSocket):
 
                 room_mgr.update_position(pid, alpha, beta, gamma, drawing)
 
-    except (WebSocketDisconnect, asyncio.TimeoutError, Exception):
+                # Debug: log occasionally
+                if drawing and int(alpha) % 30 == 0:
+                    p = room_mgr.room.participants.get(pid)
+                    if p:
+                        logger.warning(f"POS {pid}: a={alpha:.0f} b={beta:.0f} g={gamma:.0f} draw={drawing} -> x={p.x:.2f} y={p.y:.2f} z={p.z:.2f}")
+
+    except (WebSocketDisconnect, Exception):
         pass
     finally:
         room_mgr.remove_participant(pid)
@@ -113,11 +122,13 @@ async def ws_admin(ws: WebSocket):
     try:
         raw = await asyncio.wait_for(ws.receive_text(), timeout=10.0)
         data = json.loads(raw)
+        logger.warning(f"Admin auth attempt: type={data.get('type')}, pw_match={data.get('password') == ADMIN_PASSWORD}")
         if data.get("type") != "auth" or data.get("password") != ADMIN_PASSWORD:
             await ws.send_text(json.dumps({"type": "error", "message": "Invalid password"}))
             await ws.close()
             return
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Admin auth exception: {type(e).__name__}: {e}")
         await ws.close()
         return
 

@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import { createWs } from '../shared/ws'
 import { ParticleSystem } from '../shared/ParticleSystem'
+import { SceneHelpers } from '../shared/SceneHelpers'
 import type { ServerMsg, ParticipantSnapshot } from '../shared/types'
 
 export function DashboardApp() {
@@ -131,8 +132,9 @@ export function DashboardApp() {
 
       {/* 3D preview */}
       <div style={styles.canvasContainer}>
-        <Canvas camera={{ position: [0, 0, 5], fov: 60 }}>
+        <Canvas camera={{ position: [3, 2, 5], fov: 60 }}>
           <color attach="background" args={['#0a0a0a']} />
+          <SceneHelpers />
           <ParticleSystem snapshotRef={snapshotRef} />
           <OrbitControls enableDamping dampingFactor={0.1} />
         </Canvas>

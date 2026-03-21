@@ -1,28 +1,28 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import { QRCodeSVG } from 'qrcode.react'
 import { createWs } from '../shared/ws'
 import { ParticleSystem } from '../shared/ParticleSystem'
+import { SceneHelpers } from '../shared/SceneHelpers'
 import type { ServerMsg, ParticipantSnapshot } from '../shared/types'
 
 export function DisplayApp() {
   const [authed, setAuthed] = useState(false)
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
   const [phase, setPhase] = useState<'lobby' | 'live'>('lobby')
   const [count, setCount] = useState(0)
   const snapshotRef = useRef<ParticipantSnapshot[]>([])
 
   const mobileUrl = `${window.location.protocol}//${window.location.hostname}:${window.location.port}/mobile`
 
-  // Auto-connect: display page needs the password too
-  const connect = useCallback(() => {
-    const pw = prompt('Admin password for display:')
-    if (!pw) return
-
+  const handleAuth = useCallback(() => {
+    setError('')
     const ws = createWs('/ws/admin', (data: ServerMsg) => {
       switch (data.type) {
         case '_connected':
-          ws.send({ type: 'auth', password: pw })
+          ws.send({ type: 'auth', password })
           break
         case 'authenticated':
           if ('phase' in data) {
@@ -43,20 +43,29 @@ export function DisplayApp() {
           }
           break
         case 'error':
-          alert('Invalid password')
+          if ('message' in data) setError(data.message)
           break
       }
     })
-  }, [])
-
-  useEffect(() => {
-    connect()
-  }, [])
+  }, [password])
 
   if (!authed) {
     return (
-      <div style={styles.loadingContainer}>
-        <div style={styles.loadingText}>Connecting to server...</div>
+      <div style={styles.loginContainer}>
+        <h1 style={styles.loginTitle}>Display</h1>
+        <div style={styles.loginForm}>
+          <input
+            type="password"
+            placeholder="Admin password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleAuth()}
+            style={styles.input}
+            autoFocus
+          />
+          <button onClick={handleAuth} style={styles.button}>Connect</button>
+          {error && <div style={styles.error}>{error}</div>}
+        </div>
       </div>
     )
   }
@@ -86,8 +95,9 @@ export function DisplayApp() {
   // Live phase — full screen 3D
   return (
     <div style={styles.canvasContainer}>
-      <Canvas camera={{ position: [0, 0, 5], fov: 60 }}>
+      <Canvas camera={{ position: [3, 2, 5], fov: 60 }}>
         <color attach="background" args={['#000']} />
+        <SceneHelpers />
         <ParticleSystem snapshotRef={snapshotRef} />
         <OrbitControls
           autoRotate
@@ -98,7 +108,6 @@ export function DisplayApp() {
           enablePan={false}
         />
       </Canvas>
-      {/* Participant count overlay */}
       <div style={styles.liveOverlay}>
         <span style={styles.liveCount}>{count}</span>
       </div>
@@ -107,12 +116,25 @@ export function DisplayApp() {
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  loadingContainer: {
+  loginContainer: {
     width: '100%', height: '100%',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    background: '#000',
+    display: 'flex', flexDirection: 'column',
+    alignItems: 'center', justifyContent: 'center',
+    background: '#000', color: '#fff',
   },
-  loadingText: { fontSize: '1.5rem', opacity: 0.5, color: '#fff' },
+  loginTitle: { fontSize: '1.5rem', opacity: 0.5, marginBottom: '2rem' },
+  loginForm: { display: 'flex', flexDirection: 'column', gap: '1rem', width: 300 },
+  input: {
+    padding: '0.8rem 1rem', fontSize: '1rem',
+    background: '#222', border: '1px solid #444', borderRadius: 8,
+    color: '#fff', outline: 'none',
+  },
+  button: {
+    padding: '0.8rem', fontSize: '1rem', fontWeight: 700,
+    background: '#fff', color: '#000', border: 'none', borderRadius: 8,
+    cursor: 'pointer',
+  },
+  error: { color: '#f44', textAlign: 'center' },
   lobbyContainer: {
     width: '100%', height: '100%',
     display: 'flex', flexDirection: 'column',
