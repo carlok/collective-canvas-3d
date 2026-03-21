@@ -48,7 +48,7 @@ export function ParticleSystem({ snapshotRef }: ParticleSystemProps) {
     colors[slot * 3] = color.r
     colors[slot * 3 + 1] = color.g
     colors[slot * 3 + 2] = color.b
-    sizes[slot] = 1.0 + Math.random() * 0.5
+    sizes[slot] = 0.4 + Math.random() * 0.2
     ages[slot] = 0
   }
 
@@ -192,7 +192,7 @@ export function ParticleSystem({ snapshotRef }: ParticleSystemProps) {
           void main() {
             vColor = color;
             vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-            gl_PointSize = size * (60.0 / -mvPosition.z);
+            gl_PointSize = size * (30.0 / -mvPosition.z);
             gl_Position = projectionMatrix * mvPosition;
           }
         `}
@@ -202,7 +202,7 @@ export function ParticleSystem({ snapshotRef }: ParticleSystemProps) {
             float d = length(gl_PointCoord - vec2(0.5));
             if (d > 0.5) discard;
             float alpha = smoothstep(0.5, 0.0, d);
-            gl_FragColor = vec4(vColor, alpha * 0.6);
+            gl_FragColor = vec4(vColor, alpha * 0.35);
           }
         `}
       />

@@ -9,9 +9,9 @@ function hasMotionSensor(): boolean {
 }
 
 // Sensitivity: degrees/second integrated over time → maps to position
-// Lower = more sensitive (bigger movements from smaller gestures)
-const POSITION_DECAY = 0.97 // slight pull back to center (prevents drift)
-const ROTATION_SCALE = 0.0008 // how fast rotation maps to position change
+// Tuning: how rotation maps to brush movement
+const POSITION_DECAY = 1.0 // no decay — brush stays where you put it
+const ROTATION_SCALE = 0.05 // very high sensitivity — arm circle → visible circle
 
 export function MobileApp() {
   const [phase, setPhase] = useState<Phase>('join')
